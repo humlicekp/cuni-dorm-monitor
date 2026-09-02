@@ -144,14 +144,15 @@ def register_telegram_commands(token):
         return
     url = f"https://api.telegram.org/bot{token}/setMyCommands"
     commands = [
-        {"command": "check", "description": "Okamzita kontrola vsech koleji"},
-        {"command": "status", "description": "Stav monitoru a sledovane kategorie"},
-        {"command": "women", "description": "Zapnout / vypnout sledovani zen"},
-        {"command": "logs", "description": "Posledni radky z logu"},
-        {"command": "stop", "description": "Pozastavit hlidani"},
-        {"command": "start", "description": "Obnovit / spustit hlidani"},
-        {"command": "restart", "description": "Restartovat sluzbu"},
-        {"command": "help", "description": "Zobrazit napovedu"}
+        {"command": "check", "description": "Immediate check across all dormitories"},
+        {"command": "status", "description": "Monitor status and active categories"},
+        {"command": "men", "description": "Enable / disable monitoring for men"},
+        {"command": "women", "description": "Enable / disable monitoring for women"},
+        {"command": "logs", "description": "Recent log entries"},
+        {"command": "stop", "description": "Pause monitoring"},
+        {"command": "start", "description": "Resume monitoring"},
+        {"command": "restart", "description": "Restart service"},
+        {"command": "help", "description": "Display help message"}
     ]
     try:
         requests.post(url, json={"commands": commands}, timeout=5)
@@ -267,18 +268,18 @@ def parse_college_page(session, url, fallback_name="Kolej", monitor_men=True, mo
 
 def format_alert_message(room_data, is_reminder=False):
     """Format Telegram HTML message for an available room."""
-    header = "<b>STALE VOLNA KAPACITA KOLEJE! (Pripomenuti)</b>" if is_reminder else "<b>VOLNA KAPACITA KOLEJE!</b>"
+    header = "<b>DORM CAPACITY STILL AVAILABLE! (Reminder)</b>" if is_reminder else "<b>DORM CAPACITY AVAILABLE!</b>"
     
     return (
         f"{header}\n\n"
-        f"Kolej: <b>{room_data['college']}</b>\n"
-        f"Pokoj: <b>{room_data['room']}</b>\n\n"
-        f"• <b>Muzi:</b> {room_data['men']}\n"
-        f"• <b>Neurceno:</b> {room_data['unspecified']}\n"
-        f"• <b>Zeny:</b> {room_data['women']}\n"
-        f"• <b>Cena:</b> {room_data['price']} Kc/noc\n\n"
-        f"<a href=\"{room_data['url']}\"><b>Otevrit rezervaci na webu UK</b></a>\n"
-        f"<i>Zjisteno v {datetime.now().strftime('%H:%M:%S')}</i>"
+        f"Dormitory: <b>{room_data['college']}</b>\n"
+        f"Room: <b>{room_data['room']}</b>\n\n"
+        f"• <b>Men:</b> {room_data['men']}\n"
+        f"• <b>Unspecified:</b> {room_data['unspecified']}\n"
+        f"• <b>Women:</b> {room_data['women']}\n"
+        f"• <b>Price:</b> {room_data['price']} CZK/night\n\n"
+        f"<a href=\"{room_data['url']}\"><b>Open reservation on CUNI portal</b></a>\n"
+        f"<i>Detected at {datetime.now().strftime('%H:%M:%S')}</i>"
     )
 
 
@@ -399,16 +400,16 @@ def handle_telegram_command(cmd_text, token, chat_id, config, session, state):
             MONITORING_PAUSED = False
             send_telegram_message(
                 token, chat_id,
-                "<b>Hlidani bylo obnoveno!</b>\n\n"
-                f"Sluzba opet aktivne kontroluje koleje kazdych {config.get('check_interval_seconds', 60)}s."
+                "<b>Monitoring resumed!</b>\n\n"
+                f"The service is actively checking dormitories every {config.get('check_interval_seconds', 60)}s."
             )
             TRIGGER_CHECK_EVENT.set()
         else:
             send_telegram_message(
                 token, chat_id,
-                "<b>CUNI Dorm Monitor je aktivni.</b>\n\n"
-                "Pro zjisteni stavu zadejte /status nebo pro okamzitou kontrolu /check.\n"
-                "Kompletni prehled prikazu ziskate pres /help."
+                "<b>CUNI Dorm Monitor is active.</b>\n\n"
+                "Send /status to check status or /check for an immediate scan.\n"
+                "Send /help to view all available commands."
             )
 
     elif cmd in ("/stop", "/pause"):
@@ -416,8 +417,8 @@ def handle_telegram_command(cmd_text, token, chat_id, config, session, state):
         logger.info("Monitoring paused via Telegram /stop")
         send_telegram_message(
             token, chat_id,
-            "<b>Hlidani bylo pozastaveno.</b>\n\n"
-            "Automaticke kontroly jsou zastaveny. Pro opetovne spusteni poslete /start nebo /resume."
+            "<b>Monitoring paused.</b>\n\n"
+            "Automated checks are stopped. Send /start or /resume to restart."
         )
 
     elif cmd == "/status":
@@ -426,35 +427,58 @@ def handle_telegram_command(cmd_text, token, chat_id, config, session, state):
         minutes, seconds = divmod(rem, 60)
         uptime_str = f"{hours}h {minutes}m {seconds}s"
         
-        last_check_str = "Jeste neprobehla"
+        last_check_str = "Not performed yet"
         if LAST_CHECK_TIME:
             elapsed = int(time.time() - LAST_CHECK_TIME)
-            last_check_str = f"pred {elapsed} s ({datetime.fromtimestamp(LAST_CHECK_TIME).strftime('%H:%M:%S')})"
+            last_check_str = f"{elapsed}s ago ({datetime.fromtimestamp(LAST_CHECK_TIME).strftime('%H:%M:%S')})"
 
-        status_icon = "Pozastaveno" if MONITORING_PAUSED else "Aktivni (bezi)"
+        status_icon = "Paused" if MONITORING_PAUSED else "Active (running)"
         colleges_count = len(config.get("colleges", []))
         avail_count = len(state)
 
         monitored_list = []
         if config.get("monitor_men", True):
-            monitored_list.append("Muzi")
+            monitored_list.append("Men")
         if config.get("monitor_unspecified", True):
-            monitored_list.append("Neurceno")
+            monitored_list.append("Unspecified")
         if config.get("monitor_women", False):
-            monitored_list.append("Zeny")
-        monitored_str = ", ".join(monitored_list) if monitored_list else "Zadne"
+            monitored_list.append("Women")
+        monitored_str = ", ".join(monitored_list) if monitored_list else "None"
 
         text = (
-            "<b>Stav CUNI Dorm Monitoru</b>\n\n"
+            "<b>CUNI Dorm Monitor Status</b>\n\n"
             f"• <b>Status:</b> {status_icon}\n"
-            f"• <b>Doba behu:</b> {uptime_str}\n"
-            f"• <b>Posledni kontrola:</b> {last_check_str}\n"
-            f"• <b>Interval:</b> {config.get('check_interval_seconds', 60)} s\n"
-            f"• <b>Sledovane kategorie:</b> {monitored_str}\n"
-            f"• <b>Sledovanych koleji:</b> {colleges_count}\n"
-            f"• <b>Aktualne volnych typu luzek:</b> {avail_count}\n"
+            f"• <b>Uptime:</b> {uptime_str}\n"
+            f"• <b>Last check:</b> {last_check_str}\n"
+            f"• <b>Interval:</b> {config.get('check_interval_seconds', 60)}s\n"
+            f"• <b>Monitored categories:</b> {monitored_str}\n"
+            f"• <b>Monitored dormitories:</b> {colleges_count}\n"
+            f"• <b>Currently available room types:</b> {avail_count}\n"
         )
         send_telegram_message(token, chat_id, text)
+
+    elif cmd == "/men":
+        parts = cmd_text.strip().split()
+        if len(parts) > 1:
+            subcmd = parts[1].lower()
+            if subcmd in ("on", "1", "true", "yes", "ano"):
+                config["monitor_men"] = True
+                save_config(config)
+                send_telegram_message(token, chat_id, "Monitoring category Men: <b>ENABLED</b>.")
+                TRIGGER_CHECK_EVENT.set()
+            elif subcmd in ("off", "0", "false", "no", "ne"):
+                config["monitor_men"] = False
+                save_config(config)
+                send_telegram_message(token, chat_id, "Monitoring category Men: <b>DISABLED</b>.")
+            else:
+                send_telegram_message(token, chat_id, "Usage: /men on or /men off")
+        else:
+            status_curr = "ENABLED" if config.get("monitor_men", True) else "DISABLED"
+            send_telegram_message(
+                token, chat_id,
+                f"Monitoring category Men is currently: <b>{status_curr}</b>.\n"
+                "To toggle, use: /men on or /men off"
+            )
 
     elif cmd == "/women":
         parts = cmd_text.strip().split()
@@ -463,56 +487,56 @@ def handle_telegram_command(cmd_text, token, chat_id, config, session, state):
             if subcmd in ("on", "1", "true", "ano", "yes"):
                 config["monitor_women"] = True
                 save_config(config)
-                send_telegram_message(token, chat_id, "Sledovani kategorie Zeny: <b>ZAPNUTO</b>.")
+                send_telegram_message(token, chat_id, "Monitoring category Women: <b>ENABLED</b>.")
                 TRIGGER_CHECK_EVENT.set()
             elif subcmd in ("off", "0", "false", "ne", "no"):
                 config["monitor_women"] = False
                 save_config(config)
-                send_telegram_message(token, chat_id, "Sledovani kategorie Zeny: <b>VYPNUTO</b>.")
+                send_telegram_message(token, chat_id, "Monitoring category Women: <b>DISABLED</b>.")
             else:
-                send_telegram_message(token, chat_id, "Pouziti: /women on nebo /women off")
+                send_telegram_message(token, chat_id, "Usage: /women on or /women off")
         else:
-            status_curr = "ZAPNUTO" if config.get("monitor_women", False) else "VYPNUTO"
+            status_curr = "ENABLED" if config.get("monitor_women", False) else "DISABLED"
             send_telegram_message(
                 token, chat_id,
-                f"Sledovani kategorie Zeny je aktualne: <b>{status_curr}</b>.\n"
-                "Pro zmenu zadejte: /women on nebo /women off"
+                f"Monitoring category Women is currently: <b>{status_curr}</b>.\n"
+                "To toggle, use: /women on or /women off"
             )
 
     elif cmd == "/check":
-        send_telegram_message(token, chat_id, "<i>Provadim okamzitou kontrolu vsech koleji...</i>")
+        send_telegram_message(token, chat_id, "<i>Performing immediate check across all dormitories...</i>")
         run_monitor_cycle(config, session, state)
         
         # Build nice summary
-        lines = ["<b>Vysledky aktualni kontroly:</b>\n\n"]
+        lines = ["<b>Current check results:</b>\n\n"]
         total_avail = 0
         
         for c in LAST_CHECK_DATA:
             avail_rooms = c.get("available", [])
-            title = c.get("title", "Kolej")
+            title = c.get("title", "Dormitory")
             url = c.get("url", "")
             
             if avail_rooms:
                 total_avail += len(avail_rooms)
                 for rm in avail_rooms:
                     lines.append(
-                        f"[VOLNO] <b><a href=\"{url}\">{title}</a></b>: {rm['room']}\n"
-                        f"   Muzi: {rm['men']} | Neurceno: {rm['unspecified']} | Zeny: {rm['women']} ({rm['price']} Kc)\n"
+                        f"[AVAILABLE] <b><a href=\"{url}\">{title}</a></b>: {rm['room']}\n"
+                        f"   Men: {rm['men']} | Unspecified: {rm['unspecified']} | Women: {rm['women']} ({rm['price']} CZK)\n"
                     )
             else:
-                lines.append(f"[Obsazeno] <b>{title}</b>\n")
+                lines.append(f"[Occupied] <b>{title}</b>\n")
                 
         if total_avail == 0:
-            lines.append("\n<i>Vsude je momentalne 0 volnych mist.</i>")
+            lines.append("\n<i>All dormitories currently have 0 available spots.</i>")
         else:
-            lines.append(f"\n<b>Celkem nalezeno {total_avail} dostupnych nabidek!</b>")
+            lines.append(f"\n<b>Total available offers found: {total_avail}!</b>")
             
         send_telegram_message(token, chat_id, "".join(lines))
 
     elif cmd == "/logs":
         lines = log_buffer.get_last(15)
         if not lines:
-            raw_text = "Zatim zadne zaznamy v logu."
+            raw_text = "No log entries recorded yet."
         else:
             raw_text = "\n".join(lines)
             
@@ -520,11 +544,11 @@ def handle_telegram_command(cmd_text, token, chat_id, config, session, state):
         if len(safe_logs) > 3800:
             safe_logs = safe_logs[-3800:]
             
-        msg = f"<b>Posledni zaznamy logu:</b>\n\n<pre>{safe_logs}</pre>"
+        msg = f"<b>Recent log entries:</b>\n\n<pre>{safe_logs}</pre>"
         send_telegram_message(token, chat_id, msg)
 
     elif cmd == "/restart":
-        send_telegram_message(token, chat_id, "<b>Restartuji sluzbu na serveru...</b>")
+        send_telegram_message(token, chat_id, "<b>Restarting service on server...</b>")
         logger.info("Restart requested via Telegram /restart")
         def _restart_worker():
             time.sleep(1.5)
@@ -533,22 +557,23 @@ def handle_telegram_command(cmd_text, token, chat_id, config, session, state):
 
     elif cmd == "/help":
         help_text = (
-            "<b>Dostupne prikazy:</b>\n\n"
-            "• /check - Okamzita kontrola vsech koleji s prehledem\n"
-            "• /status - Stav monitoru, doba behu a sledovane kategorie\n"
-            "• /women [on|off] - Zapnout / vypnout sledovani kategorie zeny\n"
-            "• /logs - Poslednich 15 radku z behoveho logu\n"
-            "• /stop - Pozastavi automaticke hlidani\n"
-            "• /start - Obnovi hlidani\n"
-            "• /restart - Restartuje sluzbu na ThinkPadu\n"
-            "• /help - Zobrazi tuto napovedu"
+            "<b>Available commands:</b>\n\n"
+            "• /check - Immediate check across all dormitories\n"
+            "• /status - Service status, uptime, and active categories\n"
+            "• /men [on|off] - Enable / disable monitoring for men\n"
+            "• /women [on|off] - Enable / disable monitoring for women\n"
+            "• /logs - Last 15 lines from runtime log\n"
+            "• /stop - Pause automated monitoring\n"
+            "• /start - Resume monitoring\n"
+            "• /restart - Restart service on ThinkPad\n"
+            "• /help - Display this help message"
         )
         send_telegram_message(token, chat_id, help_text)
 
     else:
         send_telegram_message(
             token, chat_id,
-            "Neznámý příkaz. Zadejte /help pro zobrazení možností."
+            "Unknown command. Send /help to see available options."
         )
 
 
@@ -609,10 +634,10 @@ def test_telegram_cmd(config):
         
     print(f"Sending test notification to chat {chat_id}...")
     test_msg = (
-        "<b>CUNI Dorm Monitor - Test uspesny!</b>\n\n"
-        "Tento bot uspesne odesila zpravy. Jakmile se uvolni jakakoliv kapacita v "
-        "kategoriich <b>Muzi</b> nebo <b>Neurceno</b> na sledovanych kolejich UK, "
-        "obdrzite okamzite upozorneni s primym odkazem na rezervaci."
+        "<b>CUNI Dorm Monitor - Test successful!</b>\n\n"
+        "This bot is successfully sending messages. As soon as capacity opens in your "
+        "monitored categories on Charles University dormitories, you will receive an "
+        "immediate alert with a direct reservation link."
     )
     success, err = send_telegram_message(token, chat_id, test_msg)
     if success:
@@ -637,7 +662,7 @@ def check_once_cmd(config):
     
     for item in colleges:
         url = item.get("url")
-        fallback_name = item.get("name", "Kolej")
+        fallback_name = item.get("name", "Dormitory")
         try:
             title, all_rooms, available_rooms = parse_college_page(
                 session, url, fallback_name,
@@ -645,29 +670,29 @@ def check_once_cmd(config):
                 monitor_women=monitor_women,
                 monitor_unspecified=monitor_unspecified
             )
-            print(f"Kolej: {title} ({url})")
+            print(f"Dormitory: {title} ({url})")
             if not all_rooms:
-                print("    (Zadna luzka nenalezena nebo chyba nacitani tabulky)")
+                print("    (No rooms found or table error)")
             for rm in all_rooms:
                 is_avail = (
                     (monitor_men and rm["men"] > 0) or
                     (monitor_unspecified and rm["unspecified"] > 0) or
                     (monitor_women and rm["women"] > 0)
                 )
-                status_icon = "VOLNO!" if is_avail else "Obsazeno"
+                status_icon = "AVAILABLE!" if is_avail else "Occupied"
                 print(
-                    f"    [{status_icon:<8}] {rm['room']:<36} | "
-                    f"Muzi: {rm['men']:<2} | Neurceno: {rm['unspecified']:<2} | Zeny: {rm['women']:<2} | "
-                    f"{rm['price']} Kc"
+                    f"    [{status_icon:<10}] {rm['room']:<36} | "
+                    f"Men: {rm['men']:<2} | Unspecified: {rm['unspecified']:<2} | Women: {rm['women']:<2} | "
+                    f"{rm['price']} CZK"
                 )
                 if is_avail:
                     total_available += 1
             print("-" * 70)
         except Exception as e:
-            print(f"    Chyba pri stahovani {fallback_name}: {e}")
+            print(f"    Error fetching {fallback_name}: {e}")
             print("-" * 70)
             
-    print(f"\nCelkem nalezeno dostupnych typu pokoju: {total_available}\n")
+    print(f"\nTotal available room types found: {total_available}\n")
 
 
 def main():
@@ -703,9 +728,9 @@ def main():
 
     if send_startup and token and chat_id:
         startup_text = (
-            "<b>CUNI Dorm Monitor byl spusten!</b>\n\n"
-            f"Sleduji {len(config.get('colleges', []))} koleji kazdych {interval} sekund.\n"
-            "Prikazy pro ovladani: /status, /check, /logs, /stop, /restart."
+            "<b>CUNI Dorm Monitor started!</b>\n\n"
+            f"Monitoring {len(config.get('colleges', []))} dormitories every {interval} seconds.\n"
+            "Commands: /status, /check, /men, /women, /logs, /stop, /restart."
         )
         send_telegram_message(token, chat_id, startup_text)
 

@@ -33,6 +33,9 @@ You can control the monitor directly from your Telegram conversation:
 
 - /check - Perform an immediate scan across all dormitories and return current availability.
 - /status - Display service uptime, last check timestamp, interval, and active monitored categories.
+- /men on - Enable monitoring for Men (Muzi) category.
+- /men off - Disable monitoring for Men (Muzi) category.
+- /men - Check current status of Men category monitoring.
 - /women on - Enable monitoring for Women (Zeny) category.
 - /women off - Disable monitoring for Women (Zeny) category.
 - /women - Check current status of Women category monitoring.
