@@ -1,0 +1,15 @@
+# Sensitive configuration (Telegram bot token, chat ID)
+config.json
+.env
+
+# Runtime state and logs
+state.json
+*.log
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/

@@ -1,0 +1,33 @@
+{
+  "telegram_bot_token": "YOUR_TELEGRAM_BOT_TOKEN",
+  "telegram_chat_id": "YOUR_TELEGRAM_CHAT_ID",
+  "check_interval_seconds": 60,
+  "reminder_interval_minutes": 60,
+  "send_startup_message": true,
+  "colleges": [
+    {
+      "name": "Kolej Hvězda",
+      "url": "https://rehos.cuni.cz/crpp/eshop/collegeDetail/380944"
+    },
+    {
+      "name": "Kolej Budeč",
+      "url": "https://rehos.cuni.cz/crpp/eshop/collegeDetail/380942"
+    },
+    {
+      "name": "Kolej Jednota",
+      "url": "https://rehos.cuni.cz/crpp/eshop/collegeDetail/380939"
+    },
+    {
+      "name": "Kolej Na Větrníku",
+      "url": "https://rehos.cuni.cz/crpp/eshop/collegeDetail/380945"
+    },
+    {
+      "name": "Kolej Švehlova",
+      "url": "https://rehos.cuni.cz/crpp/eshop/collegeDetail/380943"
+    },
+    {
+      "name": "Kolej 17. listopadu",
+      "url": "https://rehos.cuni.cz/crpp/eshop/collegeDetail/380948"
+    }
+  ]
+}

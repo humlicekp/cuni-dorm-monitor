@@ -1,0 +1,16 @@
+[Unit]
+Description=CUNI Dormitory Capacity Monitor Telegram Bot
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/admin/projects/cuni-dorm-monitor
+ExecStart=/usr/bin/python3 /home/admin/projects/cuni-dorm-monitor/monitor.py
+Restart=always
+RestartSec=15
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
