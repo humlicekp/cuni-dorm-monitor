@@ -4,13 +4,16 @@
   "check_interval_seconds": 60,
   "reminder_interval_minutes": 60,
   "send_startup_message": true,
+  "monitor_men": true,
+  "monitor_women": false,
+  "monitor_unspecified": true,
   "colleges": [
     {
-      "name": "Kolej Hvězda",
+      "name": "Kolej Hvezda",
       "url": "https://rehos.cuni.cz/crpp/eshop/collegeDetail/380944"
     },
     {
-      "name": "Kolej Budeč",
+      "name": "Kolej Budec",
       "url": "https://rehos.cuni.cz/crpp/eshop/collegeDetail/380942"
     },
     {
@@ -18,11 +21,11 @@
       "url": "https://rehos.cuni.cz/crpp/eshop/collegeDetail/380939"
     },
     {
-      "name": "Kolej Na Větrníku",
+      "name": "Kolej Na Vetrniku",
       "url": "https://rehos.cuni.cz/crpp/eshop/collegeDetail/380945"
     },
     {
-      "name": "Kolej Švehlova",
+      "name": "Kolej Svehlova",
       "url": "https://rehos.cuni.cz/crpp/eshop/collegeDetail/380943"
     },
     {

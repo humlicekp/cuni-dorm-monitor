@@ -144,13 +144,14 @@ def register_telegram_commands(token):
         return
     url = f"https://api.telegram.org/bot{token}/setMyCommands"
     commands = [
-        {"command": "check", "description": "Okamžitá kontrola všech kolejí"},
-        {"command": "status", "description": "Aktuální stav monitoru"},
-        {"command": "logs", "description": "Poslední řádky z logu"},
-        {"command": "stop", "description": "Pozastavit hlídání"},
-        {"command": "start", "description": "Obnovit / spustit hlídání"},
-        {"command": "restart", "description": "Restartovat službu"},
-        {"command": "help", "description": "Zobrazit nápovědu"}
+        {"command": "check", "description": "Okamzita kontrola vsech koleji"},
+        {"command": "status", "description": "Stav monitoru a sledovane kategorie"},
+        {"command": "women", "description": "Zapnout / vypnout sledovani zen"},
+        {"command": "logs", "description": "Posledni radky z logu"},
+        {"command": "stop", "description": "Pozastavit hlidani"},
+        {"command": "start", "description": "Obnovit / spustit hlidani"},
+        {"command": "restart", "description": "Restartovat sluzbu"},
+        {"command": "help", "description": "Zobrazit napovedu"}
     ]
     try:
         requests.post(url, json={"commands": commands}, timeout=5)
@@ -158,7 +159,7 @@ def register_telegram_commands(token):
         logger.warning(f"Could not register Telegram commands: {e}")
 
 
-def parse_college_page(session, url, fallback_name="Kolej"):
+def parse_college_page(session, url, fallback_name="Kolej", monitor_men=True, monitor_women=False, monitor_unspecified=True):
     """
     Fetch and parse a college detail page.
     Returns:
@@ -253,7 +254,12 @@ def parse_college_page(session, url, fallback_name="Kolej"):
             }
             all_rooms.append(room_data)
 
-            if men > 0 or unspecified > 0:
+            is_avail = (
+                (monitor_men and men > 0) or
+                (monitor_unspecified and unspecified > 0) or
+                (monitor_women and women > 0)
+            )
+            if is_avail:
                 available_rooms.append(room_data)
 
     return title, all_rooms, available_rooms
@@ -283,6 +289,9 @@ def run_monitor_cycle(config, session, state, state_path=DEFAULT_STATE_PATH):
     token = config.get("telegram_bot_token", "").strip()
     chat_id = config.get("telegram_chat_id", "")
     reminder_minutes = config.get("reminder_interval_minutes", 60)
+    monitor_men = config.get("monitor_men", True)
+    monitor_women = config.get("monitor_women", False)
+    monitor_unspecified = config.get("monitor_unspecified", True)
     
     current_active_keys = set()
     newly_found_count = 0
@@ -295,7 +304,12 @@ def run_monitor_cycle(config, session, state, state_path=DEFAULT_STATE_PATH):
             continue
             
         try:
-            title, all_rooms, available_rooms = parse_college_page(session, url, fallback_name)
+            title, all_rooms, available_rooms = parse_college_page(
+                session, url, fallback_name,
+                monitor_men=monitor_men,
+                monitor_women=monitor_women,
+                monitor_unspecified=monitor_unspecified
+            )
             cycle_data.append({
                 "title": title,
                 "url": url,
@@ -316,7 +330,9 @@ def run_monitor_cycle(config, session, state, state_path=DEFAULT_STATE_PATH):
                 if not existing_entry:
                     should_notify = True
                     is_reminder = False
-                elif existing_entry.get("men") != rm["men"] or existing_entry.get("unspecified") != rm["unspecified"]:
+                elif (existing_entry.get("men") != rm["men"] or 
+                      existing_entry.get("unspecified") != rm["unspecified"] or
+                      existing_entry.get("women") != rm["women"]):
                     should_notify = True
                     is_reminder = False
                 elif reminder_minutes > 0 and (now_ts - existing_entry.get("last_notified", 0)) >= (reminder_minutes * 60):
@@ -325,7 +341,7 @@ def run_monitor_cycle(config, session, state, state_path=DEFAULT_STATE_PATH):
                 
                 if should_notify:
                     newly_found_count += 1
-                    logger.info(f"FOUND CAPACITY: {title} - {rm['room']} (Men: {rm['men']}, Unspecified: {rm['unspecified']})")
+                    logger.info(f"FOUND CAPACITY: {title} - {rm['room']} (Men: {rm['men']}, Unspec: {rm['unspecified']}, Women: {rm['women']})")
                     msg = format_alert_message(rm, is_reminder=is_reminder)
                     success, err = send_telegram_message(token, chat_id, msg)
                     if success:
@@ -334,6 +350,7 @@ def run_monitor_cycle(config, session, state, state_path=DEFAULT_STATE_PATH):
                             "room": rm["room"],
                             "men": rm["men"],
                             "unspecified": rm["unspecified"],
+                            "women": rm["women"],
                             "price": rm["price"],
                             "last_notified": now_ts
                         }
@@ -342,6 +359,7 @@ def run_monitor_cycle(config, session, state, state_path=DEFAULT_STATE_PATH):
                 else:
                     existing_entry["men"] = rm["men"]
                     existing_entry["unspecified"] = rm["unspecified"]
+                    existing_entry["women"] = rm["women"]
                     
         except requests.RequestException as e:
             logger.warning(f"Error fetching {fallback_name} ({url}): {e}")
@@ -417,16 +435,49 @@ def handle_telegram_command(cmd_text, token, chat_id, config, session, state):
         colleges_count = len(config.get("colleges", []))
         avail_count = len(state)
 
+        monitored_list = []
+        if config.get("monitor_men", True):
+            monitored_list.append("Muzi")
+        if config.get("monitor_unspecified", True):
+            monitored_list.append("Neurceno")
+        if config.get("monitor_women", False):
+            monitored_list.append("Zeny")
+        monitored_str = ", ".join(monitored_list) if monitored_list else "Zadne"
+
         text = (
             "<b>Stav CUNI Dorm Monitoru</b>\n\n"
             f"• <b>Status:</b> {status_icon}\n"
             f"• <b>Doba behu:</b> {uptime_str}\n"
             f"• <b>Posledni kontrola:</b> {last_check_str}\n"
             f"• <b>Interval:</b> {config.get('check_interval_seconds', 60)} s\n"
+            f"• <b>Sledovane kategorie:</b> {monitored_str}\n"
             f"• <b>Sledovanych koleji:</b> {colleges_count}\n"
             f"• <b>Aktualne volnych typu luzek:</b> {avail_count}\n"
         )
         send_telegram_message(token, chat_id, text)
+
+    elif cmd == "/women":
+        parts = cmd_text.strip().split()
+        if len(parts) > 1:
+            subcmd = parts[1].lower()
+            if subcmd in ("on", "1", "true", "ano", "yes"):
+                config["monitor_women"] = True
+                save_config(config)
+                send_telegram_message(token, chat_id, "Sledovani kategorie Zeny: <b>ZAPNUTO</b>.")
+                TRIGGER_CHECK_EVENT.set()
+            elif subcmd in ("off", "0", "false", "ne", "no"):
+                config["monitor_women"] = False
+                save_config(config)
+                send_telegram_message(token, chat_id, "Sledovani kategorie Zeny: <b>VYPNUTO</b>.")
+            else:
+                send_telegram_message(token, chat_id, "Pouziti: /women on nebo /women off")
+        else:
+            status_curr = "ZAPNUTO" if config.get("monitor_women", False) else "VYPNUTO"
+            send_telegram_message(
+                token, chat_id,
+                f"Sledovani kategorie Zeny je aktualne: <b>{status_curr}</b>.\n"
+                "Pro zmenu zadejte: /women on nebo /women off"
+            )
 
     elif cmd == "/check":
         send_telegram_message(token, chat_id, "<i>Provadim okamzitou kontrolu vsech koleji...</i>")
@@ -446,7 +497,7 @@ def handle_telegram_command(cmd_text, token, chat_id, config, session, state):
                 for rm in avail_rooms:
                     lines.append(
                         f"[VOLNO] <b><a href=\"{url}\">{title}</a></b>: {rm['room']}\n"
-                        f"   Muzi: {rm['men']} | Neurceno: {rm['unspecified']} ({rm['price']} Kc)\n"
+                        f"   Muzi: {rm['men']} | Neurceno: {rm['unspecified']} | Zeny: {rm['women']} ({rm['price']} Kc)\n"
                     )
             else:
                 lines.append(f"[Obsazeno] <b>{title}</b>\n")
@@ -484,7 +535,8 @@ def handle_telegram_command(cmd_text, token, chat_id, config, session, state):
         help_text = (
             "<b>Dostupne prikazy:</b>\n\n"
             "• /check - Okamzita kontrola vsech koleji s prehledem\n"
-            "• /status - Stav monitoru, doba behu a posledni kontrola\n"
+            "• /status - Stav monitoru, doba behu a sledovane kategorie\n"
+            "• /women [on|off] - Zapnout / vypnout sledovani kategorie zeny\n"
             "• /logs - Poslednich 15 radku z behoveho logu\n"
             "• /stop - Pozastavi automaticke hlidani\n"
             "• /start - Obnovi hlidani\n"
@@ -573,6 +625,9 @@ def test_telegram_cmd(config):
 def check_once_cmd(config):
     """Run one-off check and print detailed table to console."""
     colleges = config.get("colleges", [])
+    monitor_men = config.get("monitor_men", True)
+    monitor_women = config.get("monitor_women", False)
+    monitor_unspecified = config.get("monitor_unspecified", True)
     session = requests.Session()
     print(f"\n{'='*70}")
     print(f"CUNI DORM CAPACITY CHECK - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -584,12 +639,21 @@ def check_once_cmd(config):
         url = item.get("url")
         fallback_name = item.get("name", "Kolej")
         try:
-            title, all_rooms, available_rooms = parse_college_page(session, url, fallback_name)
+            title, all_rooms, available_rooms = parse_college_page(
+                session, url, fallback_name,
+                monitor_men=monitor_men,
+                monitor_women=monitor_women,
+                monitor_unspecified=monitor_unspecified
+            )
             print(f"Kolej: {title} ({url})")
             if not all_rooms:
                 print("    (Zadna luzka nenalezena nebo chyba nacitani tabulky)")
             for rm in all_rooms:
-                is_avail = rm["men"] > 0 or rm["unspecified"] > 0
+                is_avail = (
+                    (monitor_men and rm["men"] > 0) or
+                    (monitor_unspecified and rm["unspecified"] > 0) or
+                    (monitor_women and rm["women"] > 0)
+                )
                 status_icon = "VOLNO!" if is_avail else "Obsazeno"
                 print(
                     f"    [{status_icon:<8}] {rm['room']:<36} | "
