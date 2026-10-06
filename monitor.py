@@ -18,6 +18,7 @@ import threading
 import collections
 from datetime import datetime
 import requests
+import unicodedata
 
 # Paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -138,14 +139,78 @@ def send_telegram_message(token, chat_id, text, parse_mode="HTML"):
         return False, str(e)
 
 
+def strip_accents(s):
+    """Normalize string and remove diacritics."""
+    return ''.join(c for c in unicodedata.normalize('NFD', str(s)) if unicodedata.category(c) != 'Mn').lower().strip()
+
+
+COLLEGE_ALIASES = {
+    "380944": ["hvezda", "hvezdu", "star"],
+    "380942": ["budec", "budece"],
+    "380939": ["jednota", "jednotu"],
+    "380945": ["vetrnik", "vetrniku", "na vetrniku", "na vetrnik"],
+    "380943": ["svehlova", "svehlovka", "svehlovku", "svehla", "svehly"],
+    "380948": ["17", "17.", "listopad", "17listopad", "17.listopadu", "listopadu", "17. listopadu", "17 listopadu"]
+}
+
+
+def clean_dorm_name(name):
+    """Return cleaner name without 'Kolej' prefix if present."""
+    n = str(name).strip()
+    if n.lower().startswith("kolej "):
+        return n[6:].strip()
+    return n
+
+
+def find_college_by_query(colleges, query):
+    """
+    Find college entry in config colleges list by index, alias, or name substring.
+    Returns (college_dict, index) or (None, None).
+    """
+    q = strip_accents(query)
+    if not q:
+        return None, None
+
+    # 1. By 1-based index (if within valid list range)
+    if q.isdigit() and 1 <= int(q) <= len(colleges):
+        idx = int(q) - 1
+        return colleges[idx], idx
+
+    # 2. By known URL ID aliases
+    for idx, c in enumerate(colleges):
+        url = c.get("url", "")
+        for cid, aliases in COLLEGE_ALIASES.items():
+            if cid in url:
+                if q in [strip_accents(a) for a in aliases]:
+                    return c, idx
+
+    # 3. By normalized substring match on name
+    for idx, c in enumerate(colleges):
+        c_clean = strip_accents(c.get("name", ""))
+        c_short = strip_accents(clean_dorm_name(c.get("name", "")))
+        if q == c_clean or q == c_short or q in c_clean or c_short in q:
+            return c, idx
+
+    # 4. By word stem matching (e.g. svehlov in svehlova)
+    for idx, c in enumerate(colleges):
+        c_clean = strip_accents(c.get("name", ""))
+        words = re.findall(r"\w+", c_clean)
+        for w in words:
+            if len(w) >= 4 and (w[:5] in q or q[:5] in w):
+                return c, idx
+
+    return None, None
+
+
 def register_telegram_commands(token):
     """Register menu commands in Telegram UI."""
     if not token:
         return
     url = f"https://api.telegram.org/bot{token}/setMyCommands"
     commands = [
-        {"command": "check", "description": "Immediate check across all dormitories"},
+        {"command": "check", "description": "Immediate check across enabled dormitories"},
         {"command": "status", "description": "Monitor status and active categories"},
+        {"command": "dorms", "description": "Manage enabled/disabled dormitories"},
         {"command": "men", "description": "Enable / disable monitoring for men"},
         {"command": "women", "description": "Enable / disable monitoring for women"},
         {"command": "logs", "description": "Recent log entries"},
@@ -294,15 +359,20 @@ def run_monitor_cycle(config, session, state, state_path=DEFAULT_STATE_PATH):
     monitor_women = config.get("monitor_women", False)
     monitor_unspecified = config.get("monitor_unspecified", True)
     
+    enabled_colleges = [item for item in colleges if item.get("enabled", True) and item.get("url")]
+    if not enabled_colleges:
+        logger.info("All dormitories are disabled in config. Skipping cycle.")
+        LAST_CHECK_TIME = time.time()
+        LAST_CHECK_DATA = []
+        return
+
     current_active_keys = set()
     newly_found_count = 0
     cycle_data = []
 
-    for item in colleges:
+    for item in enabled_colleges:
         url = item.get("url")
         fallback_name = item.get("name", "Kolej")
-        if not url:
-            continue
             
         try:
             title, all_rooms, available_rooms = parse_college_page(
@@ -373,10 +443,12 @@ def run_monitor_cycle(config, session, state, state_path=DEFAULT_STATE_PATH):
     LAST_CHECK_TIME = time.time()
     LAST_CHECK_DATA = cycle_data
 
-    # Clean up state for rooms that are no longer available
+    # Clean up state for rooms that are no longer available among checked colleges
+    enabled_titles = {c.get("title") for c in cycle_data}
     removed_keys = []
     for k in list(state.keys()):
-        if k not in current_active_keys:
+        dorm_part = k.split("::")[0] if "::" in k else ""
+        if dorm_part in enabled_titles and k not in current_active_keys:
             logger.info(f"Capacity no longer available: {k}")
             removed_keys.append(k)
             del state[k]
@@ -433,7 +505,8 @@ def handle_telegram_command(cmd_text, token, chat_id, config, session, state):
             last_check_str = f"{elapsed}s ago ({datetime.fromtimestamp(LAST_CHECK_TIME).strftime('%H:%M:%S')})"
 
         status_icon = "Paused" if MONITORING_PAUSED else "Active (running)"
-        colleges_count = len(config.get("colleges", []))
+        all_colleges = config.get("colleges", [])
+        enabled_colleges = [c for c in all_colleges if c.get("enabled", True)]
         avail_count = len(state)
 
         monitored_list = []
@@ -445,6 +518,12 @@ def handle_telegram_command(cmd_text, token, chat_id, config, session, state):
             monitored_list.append("Women")
         monitored_str = ", ".join(monitored_list) if monitored_list else "None"
 
+        if enabled_colleges:
+            names_str = ", ".join(clean_dorm_name(c.get("name", "")) for c in enabled_colleges)
+            dorms_str = f"{len(enabled_colleges)} of {len(all_colleges)} enabled ({names_str})"
+        else:
+            dorms_str = f"0 of {len(all_colleges)} enabled (All disabled - use /dorms to enable)"
+
         text = (
             "<b>CUNI Dorm Monitor Status</b>\n\n"
             f"• <b>Status:</b> {status_icon}\n"
@@ -452,7 +531,7 @@ def handle_telegram_command(cmd_text, token, chat_id, config, session, state):
             f"• <b>Last check:</b> {last_check_str}\n"
             f"• <b>Interval:</b> {config.get('check_interval_seconds', 60)}s\n"
             f"• <b>Monitored categories:</b> {monitored_str}\n"
-            f"• <b>Monitored dormitories:</b> {colleges_count}\n"
+            f"• <b>Dormitories:</b> {dorms_str}\n"
             f"• <b>Currently available room types:</b> {avail_count}\n"
         )
         send_telegram_message(token, chat_id, text)
@@ -503,12 +582,230 @@ def handle_telegram_command(cmd_text, token, chat_id, config, session, state):
                 "To toggle, use: /women on or /women off"
             )
 
+    elif cmd in ("/dorms", "/dorm"):
+        parts = cmd_text.strip().split()
+        all_colleges = config.get("colleges", [])
+
+        if len(parts) == 1:
+            lines = ["<b>Monitored Dormitories:</b>\n"]
+            for idx, c in enumerate(all_colleges, 1):
+                is_on = c.get("enabled", True)
+                status_txt = "[ON]" if is_on else "[OFF]"
+                name = c.get("name", f"Dormitory {idx}")
+                lines.append(f"{idx}. {name}: <b>{status_txt}</b>")
+            
+            lines.append("\n<b>Control Commands:</b>")
+            lines.append("• /dorm &lt;name|#&gt; on - Enable dormitory")
+            lines.append("• /dorm &lt;name|#&gt; off - Disable dormitory")
+            lines.append("• /dorm only &lt;name|#&gt; - Enable ONLY this dormitory")
+            lines.append("• /dorms all - Enable all dormitories")
+            lines.append("• /dorms none - Disable all dormitories")
+            lines.append("\n<i>Example: /dorm only svehlovka</i>")
+            send_telegram_message(token, chat_id, "\n".join(lines))
+
+        else:
+            sub = parts[1].lower()
+            
+            # /dorms all or /dorm all [on]
+            if sub in ("all", "all_on") and (len(parts) == 2 or parts[2].lower() in ("on", "1", "true", "yes")):
+                for c in all_colleges:
+                    c["enabled"] = True
+                save_config(config)
+                send_telegram_message(
+                    token, chat_id,
+                    "<b>All dormitories are now ENABLED.</b>\n"
+                    f"Monitoring all {len(all_colleges)} dormitories."
+                )
+                TRIGGER_CHECK_EVENT.set()
+                
+            # /dorms none or /dorm all off
+            elif sub in ("none", "all_off") or (sub == "all" and len(parts) >= 3 and parts[2].lower() in ("off", "0", "false", "no")):
+                for c in all_colleges:
+                    c["enabled"] = False
+                save_config(config)
+                state.clear()
+                save_state(state)
+                send_telegram_message(
+                    token, chat_id,
+                    "<b>All dormitories are now DISABLED.</b>\n"
+                    "Automated checks will skip until at least one dormitory is enabled."
+                )
+                
+            # /dorm only <query> or /dorms only <query>
+            elif sub == "only":
+                if len(parts) < 3:
+                    send_telegram_message(token, chat_id, "Usage: /dorm only &lt;name|#&gt;\nExample: /dorm only svehlovka")
+                else:
+                    query = " ".join(parts[2:])
+                    c_match, idx = find_college_by_query(all_colleges, query)
+                    if not c_match:
+                        send_telegram_message(
+                            token, chat_id,
+                            f"Could not find dormitory matching: \"<b>{html.escape(query)}</b>\".\n"
+                            "Send /dorms to view available dormitories."
+                        )
+                    else:
+                        for c in all_colleges:
+                            c["enabled"] = (c is c_match)
+                        save_config(config)
+                        target_name = c_match.get("name", "")
+                        for k in list(state.keys()):
+                            if not k.startswith(f"{target_name}::"):
+                                del state[k]
+                        save_state(state)
+                        send_telegram_message(
+                            token, chat_id,
+                            f"<b>Dormitory filter set to ONLY:</b>\n"
+                            f"• <b>{target_name}</b>: <b>[ENABLED]</b>\n\n"
+                            "All other dormitories are now <b>DISABLED</b>."
+                        )
+                        TRIGGER_CHECK_EVENT.set()
+
+            # /dorm on <query>
+            elif sub in ("on", "enable", "1", "true", "yes") and len(parts) >= 3:
+                query = " ".join(parts[2:])
+                c_match, idx = find_college_by_query(all_colleges, query)
+                if not c_match:
+                    send_telegram_message(
+                        token, chat_id,
+                        f"Could not find dormitory matching: \"<b>{html.escape(query)}</b>\".\n"
+                        "Send /dorms to view available dormitories."
+                    )
+                else:
+                    c_match["enabled"] = True
+                    save_config(config)
+                    send_telegram_message(
+                        token, chat_id,
+                        f"Dormitory <b>{c_match.get('name')}</b>: <b>ENABLED</b>."
+                    )
+                    TRIGGER_CHECK_EVENT.set()
+
+            # /dorm off <query>
+            elif sub in ("off", "disable", "0", "false", "no") and len(parts) >= 3:
+                query = " ".join(parts[2:])
+                c_match, idx = find_college_by_query(all_colleges, query)
+                if not c_match:
+                    send_telegram_message(
+                        token, chat_id,
+                        f"Could not find dormitory matching: \"<b>{html.escape(query)}</b>\".\n"
+                        "Send /dorms to view available dormitories."
+                    )
+                else:
+                    c_match["enabled"] = False
+                    save_config(config)
+                    target_name = c_match.get("name", "")
+                    for k in list(state.keys()):
+                        if k.startswith(f"{target_name}::"):
+                            del state[k]
+                    save_state(state)
+                    send_telegram_message(
+                        token, chat_id,
+                        f"Dormitory <b>{target_name}</b>: <b>DISABLED</b>."
+                    )
+
+            # /dorm <query> on / off / only
+            else:
+                last_arg = parts[-1].lower()
+                if last_arg in ("on", "enable", "1", "true", "yes"):
+                    query = " ".join(parts[1:-1])
+                    c_match, idx = find_college_by_query(all_colleges, query)
+                    if not c_match:
+                        send_telegram_message(
+                            token, chat_id,
+                            f"Could not find dormitory matching: \"<b>{html.escape(query)}</b>\".\n"
+                            "Send /dorms to view available dormitories."
+                        )
+                    else:
+                        c_match["enabled"] = True
+                        save_config(config)
+                        send_telegram_message(
+                            token, chat_id,
+                            f"Dormitory <b>{c_match.get('name')}</b>: <b>ENABLED</b>."
+                        )
+                        TRIGGER_CHECK_EVENT.set()
+
+                elif last_arg in ("off", "disable", "0", "false", "no"):
+                    query = " ".join(parts[1:-1])
+                    c_match, idx = find_college_by_query(all_colleges, query)
+                    if not c_match:
+                        send_telegram_message(
+                            token, chat_id,
+                            f"Could not find dormitory matching: \"<b>{html.escape(query)}</b>\".\n"
+                            "Send /dorms to view available dormitories."
+                        )
+                    else:
+                        c_match["enabled"] = False
+                        save_config(config)
+                        target_name = c_match.get("name", "")
+                        for k in list(state.keys()):
+                            if k.startswith(f"{target_name}::"):
+                                del state[k]
+                        save_state(state)
+                        send_telegram_message(
+                            token, chat_id,
+                            f"Dormitory <b>{target_name}</b>: <b>DISABLED</b>."
+                        )
+
+                elif last_arg == "only":
+                    query = " ".join(parts[1:-1])
+                    c_match, idx = find_college_by_query(all_colleges, query)
+                    if not c_match:
+                        send_telegram_message(
+                            token, chat_id,
+                            f"Could not find dormitory matching: \"<b>{html.escape(query)}</b>\".\n"
+                            "Send /dorms to view available dormitories."
+                        )
+                    else:
+                        for c in all_colleges:
+                            c["enabled"] = (c is c_match)
+                        save_config(config)
+                        target_name = c_match.get("name", "")
+                        for k in list(state.keys()):
+                            if not k.startswith(f"{target_name}::"):
+                                del state[k]
+                        save_state(state)
+                        send_telegram_message(
+                            token, chat_id,
+                            f"<b>Dormitory filter set to ONLY:</b>\n"
+                            f"• <b>{target_name}</b>: <b>[ENABLED]</b>\n\n"
+                            "All other dormitories are now <b>DISABLED</b>."
+                        )
+                        TRIGGER_CHECK_EVENT.set()
+
+                else:
+                    query = " ".join(parts[1:])
+                    c_match, idx = find_college_by_query(all_colleges, query)
+                    if c_match:
+                        is_on = c_match.get("enabled", True)
+                        status_txt = "[ENABLED]" if is_on else "[DISABLED]"
+                        send_telegram_message(
+                            token, chat_id,
+                            f"Dormitory <b>{c_match.get('name')}</b> is currently: <b>{status_txt}</b>.\n\n"
+                            f"• To toggle: /dorm {idx + 1} {'off' if is_on else 'on'}\n"
+                            f"• To isolate: /dorm only {idx + 1}"
+                        )
+                    else:
+                        send_telegram_message(
+                            token, chat_id,
+                            f"Could not find dormitory: \"<b>{html.escape(query)}</b>\".\n"
+                            "Send /dorms to view all dormitories."
+                        )
+
     elif cmd == "/check":
-        send_telegram_message(token, chat_id, "<i>Performing immediate check across all dormitories...</i>")
+        enabled_colleges = [c for c in config.get("colleges", []) if c.get("enabled", True)]
+        if not enabled_colleges:
+            send_telegram_message(
+                token, chat_id,
+                "<b>All dormitories are currently disabled.</b>\n\n"
+                "Use /dorms to view and enable dormitories."
+            )
+            return
+
+        send_telegram_message(token, chat_id, "<i>Performing immediate check across enabled dormitories...</i>")
         run_monitor_cycle(config, session, state)
         
         # Build nice summary
-        lines = ["<b>Current check results:</b>\n\n"]
+        lines = [f"<b>Current check results ({len(enabled_colleges)} dormitories monitored):</b>\n\n"]
         total_avail = 0
         
         for c in LAST_CHECK_DATA:
@@ -527,7 +824,7 @@ def handle_telegram_command(cmd_text, token, chat_id, config, session, state):
                 lines.append(f"[Occupied] <b>{title}</b>\n")
                 
         if total_avail == 0:
-            lines.append("\n<i>All dormitories currently have 0 available spots.</i>")
+            lines.append("\n<i>All monitored dormitories currently have 0 available spots.</i>")
         else:
             lines.append(f"\n<b>Total available offers found: {total_avail}!</b>")
             
@@ -558,8 +855,14 @@ def handle_telegram_command(cmd_text, token, chat_id, config, session, state):
     elif cmd == "/help":
         help_text = (
             "<b>Available commands:</b>\n\n"
-            "• /check - Immediate check across all dormitories\n"
+            "• /check - Immediate check across enabled dormitories\n"
             "• /status - Service status, uptime, and active categories\n"
+            "• /dorms - View and manage enabled/disabled dormitories\n"
+            "• /dorm &lt;name|#&gt; on - Enable dormitory (e.g. /dorm svehlova on)\n"
+            "• /dorm &lt;name|#&gt; off - Disable dormitory (e.g. /dorm hvezda off)\n"
+            "• /dorm only &lt;name|#&gt; - Enable ONLY this dormitory (e.g. /dorm only svehlovka)\n"
+            "• /dorms all - Enable all dormitories\n"
+            "• /dorms none - Disable all dormitories\n"
             "• /men [on|off] - Enable / disable monitoring for men\n"
             "• /women [on|off] - Enable / disable monitoring for women\n"
             "• /logs - Last 15 lines from runtime log\n"
@@ -571,10 +874,62 @@ def handle_telegram_command(cmd_text, token, chat_id, config, session, state):
         send_telegram_message(token, chat_id, help_text)
 
     else:
-        send_telegram_message(
-            token, chat_id,
-            "Unknown command. Send /help to see available options."
-        )
+        # Check if the command itself matches a dormitory (e.g. /svehlovka, /hvezda)
+        possible_dorm = cmd.lstrip("/")
+        all_colleges = config.get("colleges", [])
+        c_match, idx = find_college_by_query(all_colleges, possible_dorm)
+        
+        if c_match:
+            parts = cmd_text.strip().split()
+            subcmd = parts[1].lower() if len(parts) > 1 else ""
+            
+            if subcmd in ("only",):
+                for c in all_colleges:
+                    c["enabled"] = (c is c_match)
+                save_config(config)
+                target_name = c_match.get("name", "")
+                for k in list(state.keys()):
+                    if not k.startswith(f"{target_name}::"):
+                        del state[k]
+                save_state(state)
+                send_telegram_message(
+                    token, chat_id,
+                    f"<b>Dormitory filter set to ONLY:</b>\n"
+                    f"• <b>{target_name}</b>: <b>[ENABLED]</b>\n\n"
+                    "All other dormitories are now <b>DISABLED</b>."
+                )
+                TRIGGER_CHECK_EVENT.set()
+                
+            elif subcmd in ("on", "enable", "1", "true", "yes"):
+                c_match["enabled"] = True
+                save_config(config)
+                send_telegram_message(token, chat_id, f"Dormitory <b>{c_match.get('name')}</b>: <b>ENABLED</b>.")
+                TRIGGER_CHECK_EVENT.set()
+                
+            elif subcmd in ("off", "disable", "0", "false", "no"):
+                c_match["enabled"] = False
+                save_config(config)
+                target_name = c_match.get("name", "")
+                for k in list(state.keys()):
+                    if k.startswith(f"{target_name}::"):
+                        del state[k]
+                save_state(state)
+                send_telegram_message(token, chat_id, f"Dormitory <b>{target_name}</b>: <b>DISABLED</b>.")
+                
+            else:
+                is_on = c_match.get("enabled", True)
+                status_txt = "[ENABLED]" if is_on else "[DISABLED]"
+                send_telegram_message(
+                    token, chat_id,
+                    f"Dormitory <b>{c_match.get('name')}</b> is currently: <b>{status_txt}</b>.\n\n"
+                    f"• To toggle: /{possible_dorm} {'off' if is_on else 'on'}\n"
+                    f"• To isolate: /{possible_dorm} only"
+                )
+        else:
+            send_telegram_message(
+                token, chat_id,
+                "Unknown command. Send /help to see available options."
+            )
 
 
 def telegram_listener_thread(config, session, state):
@@ -663,6 +1018,12 @@ def check_once_cmd(config):
     for item in colleges:
         url = item.get("url")
         fallback_name = item.get("name", "Dormitory")
+        enabled = item.get("enabled", True)
+        if not enabled:
+            print(f"Dormitory: {fallback_name} [DISABLED] ({url})")
+            print("-" * 70)
+            continue
+
         try:
             title, all_rooms, available_rooms = parse_college_page(
                 session, url, fallback_name,
@@ -721,16 +1082,18 @@ def main():
     if not token or not chat_id:
         logger.warning("WARNING: telegram_bot_token or telegram_chat_id is NOT set!")
 
+    all_colleges = config.get("colleges", [])
+    enabled_colleges = [c for c in all_colleges if c.get("enabled", True)]
     logger.info(f"Starting CUNI Dorm Monitor daemon (interval: {interval}s)...")
-    logger.info(f"Monitoring {len(config.get('colleges', []))} dormitories.")
+    logger.info(f"Monitoring {len(enabled_colleges)} of {len(all_colleges)} dormitories.")
     
     register_telegram_commands(token)
 
     if send_startup and token and chat_id:
         startup_text = (
             "<b>CUNI Dorm Monitor started!</b>\n\n"
-            f"Monitoring {len(config.get('colleges', []))} dormitories every {interval} seconds.\n"
-            "Commands: /status, /check, /men, /women, /logs, /stop, /restart."
+            f"Monitoring {len(enabled_colleges)} of {len(all_colleges)} dormitories every {interval} seconds.\n"
+            "Commands: /status, /check, /dorms, /men, /women, /logs, /stop, /restart."
         )
         send_telegram_message(token, chat_id, startup_text)
 

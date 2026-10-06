@@ -8,8 +8,9 @@ It runs 24/7 in the background as a systemd user service and immediately sends T
 ## Features
 
 - Real-Time Monitoring: Automatically monitors specified dormitories and detects vacancies.
+- Selective Dormitory Filtering: Turn individual dormitories on or off directly via Telegram or isolate a single dormitory (e.g. only Svehlova).
 - Configurable Gender Categories: Monitor capacity for Men, Women, and Unspecified rooms independently.
-- Telegram Remote Control: Check status, trigger manual scans, toggle female room monitoring, and inspect logs directly from Telegram.
+- Telegram Remote Control: Check status, trigger manual scans, toggle dormitories, adjust gender categories, and inspect logs directly from Telegram.
 - Anti-Spam State Tracking: Alerts on new capacity and changes without flooding your chat.
 - Lightweight & Polite: Minimal bandwidth (~2 KB/s) and gentle pacing to avoid rate-limiting or server load.
 - Resilient: Automatically restarts on failures and survives reboots via systemd and user linger.
@@ -31,8 +32,18 @@ It runs 24/7 in the background as a systemd user service and immediately sends T
 
 You can control the monitor directly from your Telegram conversation:
 
-- /check - Perform an immediate scan across all dormitories and return current availability.
-- /status - Display service uptime, last check timestamp, interval, and active monitored categories.
+### Dormitory Management
+- /dorms - View all dormitories and their current monitoring status ([ON] / [OFF]).
+- /dorm only <name|#> - Enable ONLY this dormitory and disable all others (e.g. `/dorm only svehlovka`).
+- /dorm <name|#> on - Enable monitoring for a specific dormitory (e.g. `/dorm svehlova on` or `/dorm 5 on`).
+- /dorm <name|#> off - Disable monitoring for a specific dormitory (e.g. `/dorm hvezda off` or `/dorm 1 off`).
+- /<dorm_name> [on|off|only] - Quick shortcuts for any dormitory (e.g. `/svehlovka only`, `/svehlova off`, `/hvezda on`).
+- /dorms all - Enable all dormitories.
+- /dorms none - Disable all dormitories.
+
+### General & Category Controls
+- /check - Perform an immediate scan across all enabled dormitories and return current availability.
+- /status - Display service uptime, last check timestamp, interval, active categories, and active dormitories.
 - /men on - Enable monitoring for Men (Muzi) category.
 - /men off - Disable monitoring for Men (Muzi) category.
 - /men - Check current status of Men category monitoring.
@@ -71,7 +82,13 @@ Copy `config.example.json` to `config.json` and enter your credentials:
   "colleges": [
     {
       "name": "Kolej Hvezda",
-      "url": "https://rehos.cuni.cz/crpp/eshop/collegeDetail/380944"
+      "url": "https://rehos.cuni.cz/crpp/eshop/collegeDetail/380944",
+      "enabled": true
+    },
+    {
+      "name": "Kolej Svehlova",
+      "url": "https://rehos.cuni.cz/crpp/eshop/collegeDetail/380943",
+      "enabled": true
     }
   ]
 }
@@ -86,7 +103,7 @@ Configuration parameters:
 - `monitor_men`: Monitor capacity in the Men (Muzi) column (true/false).
 - `monitor_women`: Monitor capacity in the Women (Zeny) column (true/false).
 - `monitor_unspecified`: Monitor capacity in the Unspecified (Neurceno) column (true/false).
-- `colleges`: Array of dormitory names and URLs to monitor.
+- `colleges`: Array of dormitory objects with `name`, `url`, and `enabled` (true/false).
 
 ---
 
